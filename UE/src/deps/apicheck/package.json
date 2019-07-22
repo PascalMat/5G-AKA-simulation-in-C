@@ -1,0 +1,9 @@
+{
+  "name": "apicheck",
+  "version": "0.1.1",
+  "repo": "aperezdc/apicheck",
+  "description": "Assertion macros for checking function parameters",
+  "license": "MIT",
+  "keywords": [ "api", "assert", "assertion" ],
+  "src": [ "apicheck.h" ]
+}

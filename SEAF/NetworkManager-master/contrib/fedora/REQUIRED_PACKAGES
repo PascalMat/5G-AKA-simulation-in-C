@@ -1,0 +1,69 @@
+#!/bin/bash
+
+# A list of packages useful/needed to build and develop
+# NetworkManager on Fedora and RHEL.
+#
+# Not all of these packages are available, depending
+# on your distribution/release. But yum will happily
+# skip them.
+#
+# Not all of these packages are strictly speaking necessary.
+# This is a generous list of related packages.
+
+install() {
+    if [ "$NM_INSTALL" != "" ]; then
+        $NM_INSTALL "$@"
+    else
+        sudo "$(which dnf &>/dev/null && echo dnf || echo yum)" install -y "$@"
+    fi
+}
+
+install \
+    \
+    ModemManager-devel \
+    ModemManager-glib-devel \
+    audit-libs-devel \
+    bash-completion \
+    bluez-libs-devel \
+    bzip2 \
+    cscope \
+    dbus-devel \
+    dbus-glib-devel \
+    dbus-python \
+    dbus-x11 \
+    dhclient \
+    gcc-c++ \
+    gettext-devel \
+    git \
+    gnutls-devel \
+    gobject-introspection-devel \
+    gtk-doc \
+    intltool \
+    iptables \
+    jansson-devel \
+    libcurl-devel \
+    libndp-devel \
+    libpsl-devel \
+    libselinux-devel \
+    libtool \
+    libuuid-devel \
+    make \
+    meson \
+    newt-devel \
+    nss-devel \
+    polkit-devel \
+    ppp-devel \
+    pygobject3-base \
+    python3-dbus \
+    python3-gobject \
+    qt-devel \
+    readline-devel \
+    rpm-build \
+    systemd-devel \
+    teamd-devel \
+    vala-devel \
+    vala-tools \
+    valgrind \
+    wireless-tools-devel \
+    \
+    #end

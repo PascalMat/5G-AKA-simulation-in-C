@@ -1,0 +1,46 @@
+libnm_systemd_core = static_library(
+  'nm-systemd-core',
+  sources: files(
+    'sd-adapt-core/nm-sd-adapt-core.c',
+    'src/libsystemd-network/arp-util.c',
+    'src/libsystemd-network/dhcp-identifier.c',
+    'src/libsystemd-network/dhcp-network.c',
+    'src/libsystemd-network/dhcp-option.c',
+    'src/libsystemd-network/dhcp-packet.c',
+    'src/libsystemd-network/dhcp6-network.c',
+    'src/libsystemd-network/dhcp6-option.c',
+    'src/libsystemd-network/lldp-neighbor.c',
+    'src/libsystemd-network/lldp-network.c',
+    'src/libsystemd-network/network-internal.c',
+    'src/libsystemd-network/sd-dhcp-client.c',
+    'src/libsystemd-network/sd-dhcp-lease.c',
+    'src/libsystemd-network/sd-dhcp6-client.c',
+    'src/libsystemd-network/sd-dhcp6-lease.c',
+    'src/libsystemd-network/sd-ipv4acd.c',
+    'src/libsystemd-network/sd-ipv4ll.c',
+    'src/libsystemd-network/sd-lldp.c',
+    'src/libsystemd/sd-event/event-util.c',
+    'src/libsystemd/sd-event/sd-event.c',
+    'src/libsystemd/sd-id128/id128-util.c',
+    'src/libsystemd/sd-id128/sd-id128.c',
+    'src/shared/dns-domain.c',
+    'nm-sd.c',
+    'nm-sd-utils-core.c',
+  ),
+  include_directories: [
+    src_inc,
+    include_directories(
+      'sd-adapt-core',
+      'src/libsystemd-network',
+      'src/libsystemd/sd-event',
+      'src/shared',
+      'src/systemd',
+    )
+  ],
+  dependencies: [
+    nm_core_dep,
+  ],
+  c_args: [
+    '-DNETWORKMANAGER_COMPILATION=NM_NETWORKMANAGER_COMPILATION_SYSTEMD',
+  ],
+)

@@ -1,0 +1,80 @@
+# Quick syntax check:
+# python -c 'import sys, yaml; yaml.dump (yaml.load (sys.stdin), sys.stdout)' <.gitlab-ci.yml
+
+# If things don't seem to work, this can help:
+# https://gitlab.freedesktop.org/NetworkManager/NetworkManager/-/ci/lint
+
+stages:
+  - test
+  - deploy
+
+.fedora_install: &fedora_install
+  before_script:
+    - date '+%Y%m%d-%H%M%S'; NM_INSTALL="dnf install -y" ./contrib/fedora/REQUIRED_PACKAGES
+    - date '+%Y%m%d-%H%M%S'; dnf install -y glibc-langpack-pl ccache clang
+    - date '+%Y%m%d-%H%M%S'; locale -a
+    - date '+%Y%m%d-%H%M%S'; contrib/scripts/nm-ci-patch-gtkdoc.sh || true
+
+.fedora_script: &fedora_script
+  stage: test
+  script:
+    - date '+%Y%m%d-%H%M%S'; uname -a
+    - date '+%Y%m%d-%H%M%S'; dnf list --installed
+    - date '+%Y%m%d-%H%M%S'; git clean -fdx ; CI=gitlab BUILD_TYPE=autotools CC=gcc   WITH_DOCS=1 contrib/scripts/nm-ci-run.sh
+    - date '+%Y%m%d-%H%M%S'; rm -rf /tmp/nm-docs-html; mv build/INST/share/gtk-doc/html /tmp/nm-docs-html
+    - date '+%Y%m%d-%H%M%S'; git clean -fdx ; CI=gitlab BUILD_TYPE=meson     CC=gcc   WITH_DOCS=1 contrib/scripts/nm-ci-run.sh
+    - date '+%Y%m%d-%H%M%S'; git clean -fdx ; CI=gitlab BUILD_TYPE=autotools CC=clang WITH_DOCS=0 contrib/scripts/nm-ci-run.sh
+    - date '+%Y%m%d-%H%M%S'; git clean -fdx ; CI=gitlab BUILD_TYPE=meson     CC=clang WITH_DOCS=0 contrib/scripts/nm-ci-run.sh
+    - date '+%Y%m%d-%H%M%S'; ./contrib/fedora/rpm/build_clean.sh -g -w crypto_gnutls -w debug -w iwd -w test
+    - date '+%Y%m%d-%H%M%S'; ./contrib/fedora/rpm/build_clean.sh -g -w crypto_gnutls -w debug -w iwd -w test -w meson
+    - date '+%Y%m%d-%H%M%S'; mv /tmp/nm-docs-html ./docs-html
+
+checkpatch:
+  image: fedora:28
+  stage: test
+  script:
+    - date '+%Y%m%d-%H%M%S'; dnf install -y git
+    - date '+%Y%m%d-%H%M%S'; contrib/scripts/checkpatch-feature-branch.sh 2>&1 | tee checkpatch-out.txt
+  allow_failure: true
+  artifacts:
+    when: on_failure
+    paths:
+      - checkpatch-out.txt
+
+build_f28:
+  <<: *fedora_install
+  image: fedora:28
+  <<: *fedora_script
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - docs-html
+
+build_f29:
+  <<: *fedora_install
+  image: fedora:29
+  <<: *fedora_script
+
+build_f30:
+  <<: *fedora_install
+  image: fedora:30
+  <<: *fedora_script
+
+build_frawhide:
+  <<: *fedora_install
+  image: fedora:rawhide
+  <<: *fedora_script
+  allow_failure: true
+
+pages:
+  stage: deploy
+  dependencies:
+    - build_f28
+  script:
+    - mv docs-html public
+  artifacts:
+    expire_in: 20 days
+    paths:
+      - public
+  only:
+    - master

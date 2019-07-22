@@ -1,0 +1,293 @@
+So you're interested in hacking on NetworkManager?  Here's some cool
+stuff you could do...
+
+* Internet Connectivity Detection Enhancements
+
+Current connectivity checking is global, while what we really want is to check
+connectivity per-interface and update the global state based on the composite
+of each device's state.  Unfortunately that requires two things:
+
+1) latest libsoup and glib for using libsoup connection state signals, which
+   allow us to set socket options before the actual connection is made; here
+   we'd bind the socket to the specific IP address of the interface we're
+   using, and possibly set SO_BINDTODEVICE as well
+2) setting /proc/sys/net/ipv4/conf/<iface>/rp_filter to "2" which tells the
+   kernel to route the incoming and outgoing packet properly even though the
+   interface may not have the necessary routes
+
+The first is the largest obstacle, but ideally we implement this and enable it
+when we have the required glib and libsoup versions available.  One other
+complication is that this checking should be done during the
+NM_DEVICE_STATE_IP_CHECK phase (along with other operations like Wi-Fi hotspot
+auto-login) while the current checks are done globally in nm-manager.c, so
+keeping both code paths might be complex.
+
+But ideally, once the device has successfully gotten an IPv4 or IPv6 address, it
+should enter the state NM_DEVICE_STATE_IP_CHECK, where a connectivity check is
+started.  After the check returns, the device would set a property in
+NMDevicePrivate to indicate whether Internet access was successful or not, and
+advance to the NM_DEVICE_STATE_ACTIVATED state.
+
+The NMManager object, when determining the overall NM_STATE_* state in the
+nm_manager_update_state() function, would query this property and set
+NM_STATE_CONNECTED_LOCAL, NM_STATE_CONNECTED_SITE, or NM_STATE_CONNECTED_GLOBAL
+based on it and the device's state.
+
+
+* Implement NM_DEVICE_STATE_DISCONNECTING
+
+To allow for "pre-down" scenarios, this state should be implemented before a
+device is taken down while it still has connectivity.  If the device is
+taken down because its ethernet carrier was dropped, or because the WiFi
+connection was terminated by the supplicant, this state is pointless and should
+be skipped.  But if the user requested a manual "disconnect", or NM is dropping
+connections on exit, etc, then this state should be entered.  In the future
+this state should hook into a new dispatcher action in src/NetworkManagerUtils.c
+to exectue dispatcher scripts during the disconnection, and to wait a limited
+amount of time for each script to complete before allowing the device to
+proceed to the NM_DEVICE_STATE_DISCONNECTED state, fully implementing pre-down.
+
+
+* Ethernet Network Auto-detection
+
+There are various methods we can use to autodetect which wired network connection
+to use if the user connects to more than one wired network on a frequent basis.
+First, 802.1x enterprise switches broadcast frames which can be used to indicate
+that the switch supports 802.1x and thus allow NetworkManager to select an
+802.1x connection instead of blindly trying DHCP.  Second, NetworkManager could
+listen for traffic from a list of MAC addresses.  Third, NetworkManager could
+integrate 'arping' functionality to determine if a given IP address matches a
+given MAC address, and thus automatically select that connection.  All these
+methods can co-exist and be used in parallel.
+
+One small caveat is that MAC addresses are trivial to spoof, so just because
+NetworkManager has discovered a certain MAC address does not mean the network
+is authenticated; only 802.1x security can assure that a network is the network
+the user expects it to be.
+
+In any case, a new 'anchor-addresses' property of type string-array should be
+added to the NMSettingWired setting.  Each string element of this property
+should be of the format "<ip>/<mac>" or simply "<mac>".  The first format with
+an IP address would indicate that "arping"-type behavior should be used to
+actively detect the given MAC address; obviously if the given MAC address is
+used for passive discovery as well.  The second format simply lists a MAC
+address to passively listen for.
+
+One drawback of listening or probing for known MAC addresses is an increase in
+latency during connections to ethernet networks.  The probing/listening delay
+should be a reasonable amount of time, like 4 - 5 seconds or so, and should
+only be used when a visible connection has anchor addresses.
+
+Next a gboolean 'anchor-probing' variable should be added to the
+NMDeviceEthernetPrivate structure in src/nm-device-ethernet.c.  This variable
+should be set to TRUE whenever the device's carrier turns on *and* there are
+visible NMConnections with anchor addresses (ie, connections which are system-
+wide or where one of the allowed users of that connection is logged in).  Then
+probing and listening are started, which involves opening a low-level socket
+on the interface and starting the arping run or listening for MAC addresses.
+A timer is also started (don't forget to cache the timer's source ID in the
+NMDeviceEthernetPrivate data, and to cancel the timer whenever the device
+transitions to any state other than DISCONNECTED).
+
+If a known MAC address is discovered as a result of probing or listening, the
+probe/listen socket, timeout, and data are cleaned up, and NetworkManager
+would begin activation of the NMConnection that specified the found MAC address
+in the 'anchor-addresses' property.  If two or more connections specify the
+same MAC address, the connection with the most recent timestamp should be
+preferred.
+
+Similarly, if the probing/listening process detects 802.1x frames the device
+should be marked as requiring 802.1x authentication until the carrier drops.
+This would be accomplished by adding a new property to the NMDeviceEthernet
+object and exporting that property through the
+introspection/nm-device-ethernet.xml file.  This would allow clients like
+applets to ensure that users are aware that the device will not allow
+un-authenticated connections and that additional credentials are required to
+successfully connect to this network.
+
+
+* VPN re-connect (bgo #349151)
+
+NM should remember whether a VPN was connected if a connection disconnects
+(like Wi-Fi drops out or short carrier drop) or if the laptop goes to sleep.
+Upon reconnect, if the same Connection is again active, the previously
+connected VPN should be activated again as well.  Basically, don't just drop
+the VPN because Wi-Fi choked for 10 seconds, but reconnect the VPN if it was
+connected before the drop.
+
+
+* VPN IP Methods
+
+Some VPNs (openvpn with TAP for example) require that DHCP is run on a
+pseudo-ethernet device to obtain addressing information.  This is not currently
+possible, but NM already has all the code for DHCP.  Thus, a new "method"
+key should be defined in include/NetworkManagerVPN.h to allow for DHCP to
+be performed if the VPN service daemon requests it in the IP4Config or IP6Config
+signals. In nm-vpn-connection.c, upon receipt of the D-Bus Ip4Config signal
+from the VPN plugin, NetworkManager would inspect the "method" property of the
+ip4 config dictionary.  If that property was present and set to "auto" then
+DHCP would be started using the network interface returned in the dict.  The
+nm_vpn_connection_ip4_config_get() function should be split up into two
+functions, one containing the existing code for static configuration, and a
+second for handling DHCP kickoff.  Minimal parsing of the response should be
+handled in the newly reduced nm_vpn_connection_ip4_config_get() function.
+
+To handle DHCP, the NMVPNConnectionPrivate structure should have two members
+added:
+
+    NMDHCPManager *dhcp_manager;
+    NMDHCPClient  *dhcp4_client;
+
+which would be initialized in the new DHCP handler code split off from
+nm_vpn_connection_ip4_config_get().  These new members would be disposed of in
+both vpn_cleanup() and dispose(), though remember to stop any ongoing DHCP
+transaction when doing so (see dhcp4_cleanup() in nm-device.c for example code).
+For basic code to start the DHCP transaction, see dhcp4_start() in nm-device.c
+as well.  After calling nm_dhcp_manager_start_ip4() and connecting the signals
+to monitor success and failure, the VPN IP4 config handler would simply return
+without changing VPN state, unless a failure occurred.
+
+Then, when the DHCP transaction succeeds, which we'd know by checking the
+DHCP client state changes in the "state-changed" signal handler we attached to
+the DHCP client object returned from nm_dhcp_manager_start_ip4(), the code
+would retrieve the completed NMIP4Config object from the DHCP client using the
+nm_dhcp_client_get_ip4_config() function, and then proceed to execute
+essentially the bottom-half of the existing nm_vpn_connection_ip4_config_get()
+function to merge that config with user overrides and apply it to the VPN
+tunnel interface.  Other state changes from the DHCP client might trigger a
+failure of the VPN connection, just like DHCP timeouts and lease-renewal
+failures do for other devices (see dhcp_state_changed() in nm-device.c).
+
+
+* VPN Service Daemon Secret Requests
+
+In addition to NM asking the service daemons whether more secrets are required,
+VPN service daemons (like nm-vpnc-service, nm-openvpn-service, etc) should be
+able to ask NetworkManager to provide secrets during the connection attempt. To
+do this, the plugin should advertise its ability to handle out-of-band secrets
+in its .service file via the key 'async-secrets=true'.  NetworkManager would
+check that key and if present activate the VPN as normal, but skip the explicit
+NeedSecrets calls.
+
+Instead, a new "SecretsRequired" signal would be added to
+introspection/nm-vpn-plugin.xml (and corresponding helper code added to
+libnm-glib/nm-vpn-plugin.c) that would be emitted when the plugin determined
+that secrets were required.  This signal would have D-Bus signature of "sas"
+for the arguments [ <s:uuid>, <as:secrets> ] with the <uuid> obviously being
+the connection UUID, and <secrets> being an array of strings of plugin-specific
+strings the plugin requires secrets for.  This array of strings would then be
+passed as the "hints" parameter in nm-vpn-connection.c when secrets are
+requested from agents in a subsequent nm_settings_connection_get_secrets() call.
+At this time the agent code only allows one hint per request, so we may need to
+extend that to allow more than one hint.
+
+Thus when connecting if the plugin supported async secrets NetworkManager would
+still request existing secrets (without interactivity) and send them to the
+VPN service daemon in the Connect D-Bus method, then wait for the service daemon
+to either request secrets asynchronously via the SecretsRequired signal or to
+signal successful connection via the Ip4Config signal.
+
+The vpnc plugin would need to be reworked to open a pipe to vpnc's stdout and
+stdin file descriptors to capture any authentication messages, and to match
+these messages to known secrets request strings.  When receiving one of these
+strings the plugin would determine which secret was being requested and then
+emit the SecretsRequired signal to NetworkManager.  This would also imply that
+nm-vpnc-service exectutes vpnc with the "--xauth-inter" argument to enable
+challenge-response and does not use the "--non-inter" flag which suppresses that
+behavior.
+
+
+* WPS
+
+wpa_supplicant has support for WPS (Wifi Protected Setup, basically Bluetooth-
+like PIN codes for setting up a wifi connection) and we should add support for
+this to NetworkManager too.  APs that support WPS will say so in their beacon
+IEs which are contained in the "WPA" and "RSN" properties of the BSS object
+exported by the supplicant, and can be processed in src/nm-wifi-ap.c's
+foreach_property_cb() function.  We should add some private fields to the
+NMAccessPoint object (defined in nm-wifi-ap.c) to remember whether a specific
+AP supports WPS and what WPS methods it supports, and expose that over D-Bus to
+GUI clients as well.
+
+There are two common WPS setup methods: PIN and button.  For PIN, the router
+either displays a random PIN on an LCD or the router's web UI, or a static PIN
+is printed on the router itself.  The user enters that PIN instead of a PSK
+when connecting.  For the "button" method, the router has a physical button that
+when pushed, allows any client to connect for a short period of time.
+
+We'll then need to add some properties to the NMSettingWirelessSecurity setting
+for the WPS PIN code so that when the user enters it through the GUI, it can
+be passed back to NM.  And we'll need to figure out some mechanism for passing
+back an indication that the user pushed the button on the router for the
+pushbutton method.
+
+When connecting to a new access point that supports WPS, the GUI client would
+call the AddAndActivateConnection method and wait for NM to request secrets.
+NM would determine that the AP supports WPS, and request WPS secrets from the
+applet.  The applet would ask the user for a PIN, or to push the button on the
+AP, instead of asking for a passphrase or PSK.  When the user has entered the
+PIN or pushed the button, the applet returns this information to NM, which
+proceeds with the connection.
+
+NM sends the correct wpa_supplicant config for WPS to the supplicant, and waits
+for the connection to occur.  WPS can only be used the *first* time, so after a
+first successful connection, NM must request the actual hexadecimal PSK from
+wpa_supplicant via D-Bus, and store that PSK in the connection, clear any WPS
+PIN code from the connection, and save the connection to backing storage.
+
+Any applet GUI should also allow the user to enter the PSK instead of completing
+association using WPS, since quite a few routers out there are broken, or
+because the user has no physical access to the router itself, but has been given
+as passphrase/PSK instead.
+
+
+* Better Tablet/Mobile Behavior
+
+There are a few components to this:
+
+1) kernel driver and hardware capabilities: most mobile devices use periodic
+background scanning to quickly determine whether a known SSID is available and
+notify the connection manager to connect to it.  This typically requires special
+capabilities and good powersave/sleep support from the Wi-Fi kernel driver.
+There is a background scanning API in nl80211, but we need to determine how many
+SSIDs each driver allows for background scanning, and based on that number, give
+the driver the most recent N SSIDs.  We still need to periodically wake the
+device up and do a full scan just in case the user is near a known SSID that was
+not in the N top recently used networks.  This is also beneficial to normal
+desktop use-cases.
+
+wpa_supplicant doesn't currently provide an explicit interface for sending SSIDs
+to the driver for background scanning, but could simply send a list using
+configured networks.  However, NM currently does not send *all* configured
+connections' SSIDs to the supplicant, so that's something we should do first
+to optimize connection times.  To do this, NM would need to order all networks
+using the NM timestamp and convert that into a supplicant priority number, which
+would need to be adjusted periodically when the timestamp was updated.  This
+would involve tracking each network (exposed by the supplicant as a D-Bus
+object) and making sure they were added, deleted, and updated when the backing
+NMConnection objects changed.  One complication is that the supplicant
+requires secrets for various network types when the network is added via D-Bus,
+and NetworkManager might not have those secrets yet.  We may need to modify
+the supplicant allow for *all* secrets (PSKs, WEP keys, etc) to be requested
+on-demand, not just EAP secrets like 802.1x passwords.  We then need to fix
+up the supplicant's D-Bus interface to actually send requests for secrets out
+over D-Bus (like wpa_supplicant_eap_param_needed() does for the socket-based
+control interface) and to handle the resulting reply from a D-Bus client like
+wpa_supplicant_ctrl_iface_ctrl_rsp() does.
+
+With the secrets request stuff and priority handling in place, wpa_supplicant
+would control network selection and roaming (based on the priorities NM gave it
+of course) instead of NetworkManager itself, and hopefully lead to a faster WiFi
+connection process.
+
+2) single-device-at-a-time with overlapping connections: this is also probably
+the best route to go for desktop use-cases as well.  Instead of bringing all
+available connections up, only bring up the "best" connection at any given
+time based on the current priority list (which is roughly Ethernet > Wi-Fi >
+3G/Bluetooth).  However, to ensure seamless connectivity, when one connection
+begins to degrade, the next-best connection should be started before the
+current one is terminated, such that there is a small amount of overlap.
+Consequently the same behavior should be used when a better connection becomes
+available.  This behavior should be suspended when special connections like
+Internet Connection Sharing ones are started, where clearly the priorities
+are different (ie, for Mobile Hotspot 3G > WiFi).

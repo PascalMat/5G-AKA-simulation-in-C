@@ -1,0 +1,13 @@
+Changelog for NetworkManager.
+
+A separate changelog is no longer maintained since 2009.
+See the latest version before removing it in git [1].
+
+For the detailed project history see git [2].
+
+For notable changes between releases see the NEWS file [3].
+
+
+[1] https://cgit.freedesktop.org/NetworkManager/NetworkManager/plain/po/ChangeLog?id=665d47466a16f57affa329e70b39648c7b104141
+[2] https://cgit.freedesktop.org/NetworkManager/NetworkManager/log/po
+[3] https://cgit.freedesktop.org/NetworkManager/NetworkManager/plain/NEWS
